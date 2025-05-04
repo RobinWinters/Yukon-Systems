@@ -11,7 +11,6 @@ A **provider-agnostic, multi-model consensus engine** for Large Language Models 
 - **CLI:** Query multiple LLMs and get consensus directly from your terminal.
 - **Provider Agnostic:** Supports local and remote LLMs via pluggable backends.
 - **Consensus & Safety:** Flexible voting (e.g. majority) and safety gates baked in.
-- **Toros-style ASCII Banner:** Enjoy retro startup flair!
 
 ---
 
