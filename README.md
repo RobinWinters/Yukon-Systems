@@ -1,139 +1,146 @@
-# Yukon Systems: Multi-Model LLM Consensus Engine 🏔️
+# Yukon Systems: Toros — Multi-Model, Multi-Round Consensus LLM Engine
 
-A **provider-agnostic, multi-model consensus engine** for Large Language Models (LLMs) with both a rich web UI and command-line interface (CLI). Easily compare, combine, and reach consensus across multiple LLMs for more robust, reliable answers.
+![Toros ASCII Banner](https://raw.githubusercontent.com/<your-org>/<your-repo>/main/assets/toros_banner.png) <!-- (optional: replace with your own banner or text) -->
+
+## Overview
+
+Yukon Systems Toros is an extensible, provider-agnostic **multi-model LLM consensus engine** supporting:
+
+- Parallel, multi-round debate cycles among any number of models (OpenAI, Anthropic, Ollama, Llama.cpp, and more).
+- CLI and beautiful, color-formatted output for stepwise reasoning and aggregated consensus.
+- Flexible backend system for plugging in additional LLMs or inference engines.
+- (Optional) Web UI and API endpoints via FastAPI.
+
+The engine enables richer, more robust LLM evaluation by orchestrating logical "debates" among separate agents, each presenting their answers, reasoning, and confidence scores. Consensus is reached through majority and confidence-weighted voting, displayed round-by-round in a professional, easy-to-digest visual summary.
 
 ---
 
 ## Features
 
-- **Web UI:** Chat interface at [http://localhost:8000](http://localhost:8000) (Tailwind + htmx).
-- **API:** JSON/SSE API endpoints (`/api/ask`, `/api/stream`).
-- **CLI:** Query multiple LLMs and get consensus directly from your terminal.
-- **Provider Agnostic:** Supports local and remote LLMs via pluggable backends.
-- **Consensus & Safety:** Flexible voting (e.g. majority) and safety gates baked in.
-- **Toros-style ASCII Banner:** Enjoy retro startup flair!
+- ⚡ Simultaneous multi-model inference (Ollama, Llama API, OpenAI, etc.)
+- 🔄 Multi-round group debate, with evolving context and explanations
+- 🗣️ Step-by-step display: see how LLMs challenge, adapt, and agree on answers
+- 📝 Per-model rationales and confidence, all aligned in color-coded tables
+- 🏆 Final consensus verdict (by majority and by weighted voting)
+- 🎨 Rich CLI output (using `rich` & `pyfiglet`)
+- 🌐 Web browser chat interface, JSON API (optional by flag)
 
 ---
 
-## Installation & Setup
+## Quick Start
 
-First, clone this repository, then install dependencies (Python 3.9+ recommended):
+### 1. Install Requirements
 
 ```bash
-pip install fastapi uvicorn htmx-tailwind aiohttp sse-starlette \
-            openai anthropic llama-cpp-python pyfiglet rich
+pip install fastapi uvicorn htmx-tailwind aiohttp sse-starlette openai anthropic llama-cpp-python pyfiglet rich
 ```
+To use Ollama-served models, install [Ollama](https://ollama.com/) and make sure `ollama` daemon is running locally.
 
-Some features require optional dependencies for specific providers.
+### 2. (Optional) Set Environment Variables
 
----
+Configure API keys or model files in your environment:
 
-## Usage
-
-### Run the Command-Line Interface (CLI)
-
-Minimal use:
 ```bash
-python consensus_agent.py -q "What is the capital of France?"
+export LLAMA_API_KEY=sk-your-llama-key
+export ANTHROPIC_API_KEY=sk-your-anthropic-key
+export OPENAI_API_KEY=sk-your-openai-key
+export LLAMA_MODEL=/models/llama.bin      # for Llama.cpp local
 ```
-Or launch interactive mode:
+
+### 3. Run in CLI Mode
+
+```bash
+python consensus_agent.py -q "Is Python better than Rust?"
+```
+
+Or start interactive shell:
+
 ```bash
 python consensus_agent.py
 ```
 
-Sample startup (see the classic banner!):
-```
-             YUKON SYSTEMS: TOROS
-```
-_Sample output:_
-```
-[llama-local]: (Mock response...)
-[gemma]: (Mock response...)
-Consensus: Paris
-```
+You’ll see an ASCII art title and a prompt (`>>`). Enter your question and see round-by-round debate, rationales, and a highlighted consensus!
 
-### Start the Web UI
+### 4. Multi-Model Example (Ollama + Llama API + More)
+
+By default, the CLI will use all of: `Ollama (gemma)`, `Ollama (llama3-abliterated)`, and any API-backed models you have configured.
+
+### 5. (Optional) Start as Web Server
 
 ```bash
 python consensus_agent.py --web
-# Then open http://localhost:8000 in your browser
 ```
-
-### API Endpoints
-
-- `POST /api/ask` — JSON endpoint for prompt/response.
-- `GET /api/stream` — Server-sent events (SSE) for live output.
+Browse to [http://localhost:8000](http://localhost:8000).
 
 ---
 
-## Backends & Extensibility
+## Example CLI Output
 
-Backends are implemented in [`consensus_backends.py`](./consensus_backends.py). Each backend subclasses a shared `LLMBackend` interface, exposing `async def complete(prompt: str) -> str`.
+```
+───────────────── 🗣️ Debate History (Round-by-Round) ─────────────────
+─────────────── Round 1 ───────────────
+ Model          Answer                    Conf.    Reasoning
+ gemma          Paris is the capital...   0.00     Ollama (gemma): ...
+ llama3-ablit.  Paris, France             0.00     Ollama (llama3-ablit.)...
+ llama-api      Paris                     0.00   
 
-Included mock backends:
+─────────────── Round 2 ───────────────
+ Model              Answer          Conf.  Reasoning
+ gemma              ...
+ llama3-ablit.      ...
+ llama-api          ...
 
-- **LlamaCppBackend:** Stub for local [llama.cpp](https://github.com/ggerganov/llama.cpp) models.
-- **OllamaBackend:** Talks to [Ollama](https://ollama.com/) or mocks responses.
-- **OpenAIBackend:** (Mock/stub) for OpenAI, Azure, Meta, etc.
-- **AnthropicBackend:** (Mock/stub) for Claude API.
-- **LlamaAPIBackend:** Real/remote API for Llama, supports real HTTP calls.
+╭──────────── Final Output ────────────╮
+│ Model Responses (Final Round)        │
+╰──────────────────────────────────────╯
+ Model          Answer                     Conf.   Reasoning
+ gemma          Paris is ...               0.00    ...
+ llama3-ablit.  ...                                ...
+ llama-api      ...                                ...
 
-For a real environment, plug in your API keys and endpoints by configuring environment variables.
+Consensus by Majority: Paris
+Consensus by Confidence-Weighted: Paris
 
-You can easily add support for other LLMs by extending `LLMBackend` and implementing the `complete()` method.
+──────────────────────────── Rationales ────────────────────────────
+ gemma: Ollama (gemma): returned response string
+ llama3-ablit.: Ollama (llama3-ablit.): returned response string
 
----
-
-## Consensus Logic
-
-- **Voting:** The default is majority vote (`majority_vote`), but this is easily swappable.
-- **Safety:** Basic content filter (`basic_safety`) can be adapted for your needs.
-- Both are configurable via `ConsensusEngine` in [`consensus_agent.py`](./consensus_agent.py):
-
-```python
-ConsensusEngine(
-    models=[...], 
-    vote_fn=majority_vote, 
-    safety_fn=basic_safety
-)
+──────────────────────────── Total consensus time: 9.32s ──────────
 ```
 
 ---
 
-## Configuration
+## How to Add More Models
 
-Set these environment variables to enable specific model providers:
-
-- `LLAMA_MODEL`: Path to a local llama.cpp GGUF file.
-- `OPENAI_API_KEY`: OpenAI API key for remote GPT models.
-- `ANTHROPIC_API_KEY`: Claude/Anthropic API key.
-- `LLAMA_API_KEY`: Key for remote Llama API access.
-- `META_API_KEY`: Meta Llama-3 API key.
-
-You can set them per session, for example:
-```bash
-export LLAMA_MODEL=/models/llama.bin
-export OPENAI_API_KEY=...
-export ANTHROPIC_API_KEY=...
-```
+- Enable additional API keys in your environment; supported out of the box: OpenAI, Anthropic, Llama.cpp, Llama API, Ollama.
+- To add more Ollama local models, just duplicate/extend the lines in `build_engine()` in `consensus_agent.py`:
+    ```python
+    OllamaBackend("gemma", "gemma:latest"),
+    OllamaBackend("llama3-abliterated", "superdrew100/llama3-abliterated:latest"),
+    # Add more as desired
+    ```
 
 ---
 
-## Extending with New Backends
+## Project Structure
 
-To support a new LLM or API:
+| File                   | Description                              |
+|------------------------|------------------------------------------|
+| consensus_agent.py     | Main CLI, web, and engine orchestrator   |
+| consensus_backends.py  | Model backend adapters                   |
+| consensus_debate.py    | Debate, aggregation and prompt logic     |
+| README.md              | This file                                |
 
-1. Subclass `LLMBackend` in `consensus_backends.py`.
-2. Implement the `async complete(prompt: str)` method.
-3. Add your backend to `build_engine()` in `consensus_agent.py`.
+---
+
+## Attribution
+
+- Project inspired in part by [dinobby/ReConcile](https://github.com/dinobby/ReConcile)
+- Uses `rich` and `pyfiglet` for CLI enhancements.
 
 ---
 
 ## License
 
-[MIT](./LICENSE) &copy; Robin Winters
-
----
-
-Enjoy robust LLM consensus with Yukon Systems! ❄️
+MIT License (c) Yukon Systems
 
