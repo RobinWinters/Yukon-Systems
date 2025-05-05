@@ -296,10 +296,58 @@ def build_engine() -> ConsensusEngine:
 # CLI                                                                         #
 ###############################################################################
 
-def run_cli(engine: ConsensusEngine, query: str | None):
+def print_help_and_settings(engine, default_rounds=3):
+    from rich.panel import Panel
+    import os
+    # Prepare the flags section as a consistently aligned table
+    flag_lines = [
+        ("-q",     "PROMPT", "Run a single CLI question and exit"),
+        ("--web",  "",       "Start browser/server UI (http://localhost:8000)"),
+        ("--port", "N",      "Set web server port (default 8000)"),
+        ("--mode", "MODE",   'Select output mode: "transparent" (default, shows full debate) or "quiet" (progress bar + verdict only)'),
+        ("--help", "",       "Show this usage info"),
+    ]
+    flag_fmt = "  [cyan]{:<7}[/cyan] [magenta]{:<8}[/magenta]  [white]{}[/white]"
+    flag_table = "[bold yellow]Flags:[/bold yellow]\n" + "\n".join(
+        flag_fmt.format(flag, param, desc) for flag, param, desc in flag_lines
+    )
+
+    help_text = f"""[bold white]Usage:[/bold white]  [green]python consensus_agent.py [--web] [-q 'Your question'][/green]
+
+{flag_table}
+
+[bold yellow]CLI Example:[/bold yellow]
+  [green]python consensus_agent.py -q "What is the capital of France?"[/green]
+
+[bold white]Interactive Use:[/bold white]
+  [green]python consensus_agent.py[/green] and enter your query at the [bold green]>>[/] prompt.
+
+[bold yellow]Shortcuts:[/bold yellow]  [cyan]Ctrl+C[/cyan] or EOF (Ctrl+D) to quit.
+"""
+
+    # --- Settings summary
+    actives = [m.name for m in engine.models]
+    rounds = default_rounds
+    env_keys = []
+    for k in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "LLAMA_API_KEY", "LLAMA_MODEL"]:
+        present = os.getenv(k, False)
+        env_keys.append(f"{k}=[{'set' if present else 'unset'}]")
+    settings = (
+        f"[bold white]Active LLMs:[/bold white] [cyan]{', '.join(actives)}[/cyan]\n"
+        f"[bold white]Debate Rounds:[/bold white] [green]{rounds}[/green]\n"
+        f"[bold white]Environment/Keys:[/bold white] {'  '.join(env_keys)}\n"
+    )
+
+    help_panel = Panel.fit(help_text, style="bold magenta", border_style="magenta", title="[bold yellow]HELP[/bold yellow]", title_align="left")
+    settings_panel = Panel.fit(settings, style="bold green", border_style="green", title="[bold white]SETTINGS[/bold white]", title_align="left")
+    console.print(help_panel)
+    console.print(settings_panel)
+
+def run_cli(engine: ConsensusEngine, query: str | None, mode: str = "transparent"):
     console.print(f"[cyan]{BANNER}[/]")
+    print_help_and_settings(engine)
     if query:
-        asyncio.run(_ask(engine, query))
+        asyncio.run(_ask(engine, query, mode=mode))
         return
     while True:
         try:
@@ -307,77 +355,109 @@ def run_cli(engine: ConsensusEngine, query: str | None):
         except (KeyboardInterrupt, EOFError):
             console.print("\nGoodbye!")
             break
-        asyncio.run(_ask(engine, q))
+        asyncio.run(_ask(engine, q, mode=mode))
 
-async def _ask(engine: ConsensusEngine, q: str):
+async def _ask(engine: ConsensusEngine, q: str, mode: str = "transparent"):
     num_rounds = 3  # debate rounds if using new consensus
     use_debate = True  # set to False for legacy fallback mode (single round)
     import time
     start_time = time.monotonic()
 
-    # Use DebateManager-based consensus; supports any number of models (>=2)
-    try:
-        with console.status("[bold yellow]Aggregating multi-model consensus…[/]"):
-            result = await engine.query(q, use_debate=use_debate, rounds=num_rounds)
-    except Exception as e:
-        console.print(f"[red]Error:[/] {e}")
-        return
+    # -------------------------
+    # Progress bar for "quiet" mode:
+    show_full = (mode == "transparent")
+    result = None
+    if not show_full:
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+        bar = Progress(
+            SpinnerColumn(),
+            TextColumn("[yellow]Debating…[/yellow]"),
+            BarColumn(),
+            TimeElapsedColumn(),
+            expand=True
+        )
+        with bar:
+            # Assume debate across N rounds: estimate progress as rounds complete
+            # If backend implementation gets progress callback in future, hook it here.
+            task = bar.add_task("[bold green]Consensus running...", total=num_rounds)
+            # We'll just tick the progress bar once per expected round for now.
+            from asyncio import sleep
+            for n in range(num_rounds):
+                # Simulate per-round progress—remove if engine exposes callback in the future
+                bar.update(task, advance=1)
+                await sleep(0.1)  # Just animation pacing until result returns
+            try:
+                result = await engine.query(q, use_debate=True, rounds=num_rounds)
+            except Exception as e:
+                bar.stop()
+                console.print(f"[red]Error:[/] {e}")
+                return
+            bar.update(task, completed=num_rounds)
+    else:
+        try:
+            with console.status("[bold yellow]Aggregating multi-model consensus…[/]"):
+                result = await engine.query(q, use_debate=use_debate, rounds=num_rounds)
+        except Exception as e:
+            console.print(f"[red]Error:[/] {e}")
+            return
 
-    # Display per-round, per-model responses (DEBATE THOUGHT PROCESS)
+    # ---------- Output/results ----------
     rounds = result.get("rounds", [])
-    console.rule("[bold white]🗣️ Debate History (Round-by-Round)[/]")
     model_names = [m.name for m in engine.models]
-    for ridx, round_results in enumerate(rounds, 1):
-        console.rule(f"[bold yellow]Round {ridx}[/]", style="yellow", characters="─")
-        from rich.table import Table
-        round_table = Table(show_header=True, header_style="bold magenta", box=None, expand=False, padding=(0,1))
-        round_table.add_column("Model", style="bold cyan")
-        round_table.add_column("Answer", style="white")
-        round_table.add_column("Conf.", justify="center", style="green")
-        round_table.add_column("Reasoning", style="dim", overflow="fold")
-        for midx, resp in enumerate(round_results):
-            model_name = model_names[midx] if midx < len(model_names) else f"Model{midx+1}"
-            ans = str(resp.get("answer", "")) if isinstance(resp, dict) else str(resp)
-            reasoning = str(resp.get("reasoning", "")) if isinstance(resp, dict) else ""
+    from rich.panel import Panel
+    from rich.text import Text
+    import time
+    total_time = time.monotonic() - start_time
+
+    if show_full:
+        console.rule("[bold white]🗣️ Debate History (Round-by-Round)[/]")
+        for ridx, round_results in enumerate(rounds, 1):
+            console.rule(f"[bold yellow]Round {ridx}[/]", style="yellow", characters="─")
+            from rich.table import Table
+            round_table = Table(show_header=True, header_style="bold magenta", box=None, expand=False, padding=(0,1))
+            round_table.add_column("Model", style="bold cyan")
+            round_table.add_column("Answer", style="white")
+            round_table.add_column("Conf.", justify="center", style="green")
+            round_table.add_column("Reasoning", style="dim", overflow="fold")
+            for midx, resp in enumerate(round_results):
+                model_name = model_names[midx] if midx < len(model_names) else f"Model{midx+1}"
+                ans = str(resp.get("answer", "")) if isinstance(resp, dict) else str(resp)
+                reasoning = str(resp.get("reasoning", "")) if isinstance(resp, dict) else ""
+                confidence = f"{float(resp.get('confidence', 0.0)):.2f}" if isinstance(resp, dict) else "0.00"
+                round_table.add_row(
+                    f"[cyan]{model_name}[/]",
+                    f"[white]{ans}[/]",
+                    f"[green]{confidence}[/]",
+                    f"[dim]{reasoning}[/]"
+                )
+            console.print(round_table)
+            console.print()
+        # Display per-model responses for the final round
+        final_panel = Panel.fit(
+            "[b white]Model Responses (Final Round)[/]",
+            border_style="blue",
+            title="[bold blue] Final Output [/]",
+            title_align="center",
+        )
+        console.print(final_panel)
+        fin_table = Table(show_header=True, header_style="bold magenta", box=None, expand=False, padding=(0,1))
+        fin_table.add_column("Model", style="bold cyan")
+        fin_table.add_column("Answer", style="white")
+        fin_table.add_column("Conf.", style="green")
+        fin_table.add_column("Reasoning", style="dim", overflow="fold")
+        for model, resp in result["results"]:
+            ans = resp.get("answer", "") if isinstance(resp, dict) else str(resp)
+            reasoning = resp.get("reasoning", "") if isinstance(resp, dict) else ""
             confidence = f"{float(resp.get('confidence', 0.0)):.2f}" if isinstance(resp, dict) else "0.00"
-            round_table.add_row(
-                f"[cyan]{model_name}[/]",
+            fin_table.add_row(
+                f"[cyan]{model}[/]",
                 f"[white]{ans}[/]",
                 f"[green]{confidence}[/]",
                 f"[dim]{reasoning}[/]"
             )
-        console.print(round_table)
-        console.print()
+        console.print(fin_table)
 
-    # Display per-model responses for the final round
-    # Highlight final round results in a formatted table
-    from rich.panel import Panel
-    from rich.text import Text
-    final_panel = Panel.fit(
-        "[b white]Model Responses (Final Round)[/]",
-        border_style="blue",
-        title="[bold blue] Final Output [/]",
-        title_align="center",
-    )
-    console.print(final_panel)
-    fin_table = Table(show_header=True, header_style="bold magenta", box=None, expand=False, padding=(0,1))
-    fin_table.add_column("Model", style="bold cyan")
-    fin_table.add_column("Answer", style="white")
-    fin_table.add_column("Conf.", style="green")
-    fin_table.add_column("Reasoning", style="dim", overflow="fold")
-    for model, resp in result["results"]:
-        ans = resp.get("answer", "") if isinstance(resp, dict) else str(resp)
-        reasoning = resp.get("reasoning", "") if isinstance(resp, dict) else ""
-        confidence = f"{float(resp.get('confidence', 0.0)):.2f}" if isinstance(resp, dict) else "0.00"
-        fin_table.add_row(
-            f"[cyan]{model}[/]",
-            f"[white]{ans}[/]",
-            f"[green]{confidence}[/]",
-            f"[dim]{reasoning}[/]"
-        )
-    console.print(fin_table)
-
-    # Display consensus verdicts as boxed/highlighted text
+    # Display consensus verdicts as boxed/highlighted text — always show these
     consensus_txt = Text.assemble(
         ("Consensus by Majority: ", "bold white"), (str(result["majority"]), "green bold")
     )
@@ -389,15 +469,15 @@ async def _ask(engine: ConsensusEngine, q: str):
         )
         console.print(Panel.fit(wtxt, border_style="yellow", subtitle="Weighted", subtitle_align="right"))
 
-    # Rationales
-    if result.get("explanations"):
-        console.print("\n[yellow bold]Rationales:[/]")
-        for i, expl in enumerate(result.get("explanations", [])):
-            if expl:
-                console.print(f"  [bold cyan]{model_names[i]}[/]: [dim]{expl}[/]")
+    # Rationales (skip in quiet if none)
+    if show_full or result.get("explanations"):
+        if result.get("explanations"):
+            console.print("\n[yellow bold]Rationales:[/]")
+            for i, expl in enumerate(result.get("explanations", [])):
+                if expl:
+                    console.print(f"  [bold cyan]{model_names[i]}[/]: [dim]{expl}[/]")
 
     # Summary / aggregation time
-    total_time = time.monotonic() - start_time
     console.rule(f"[green]Total consensus time: {total_time:.2f}s", style="bright_green")
 ###############################################################################
 # Entrypoint                                                                  #
@@ -405,9 +485,11 @@ async def _ask(engine: ConsensusEngine, q: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Yukon Systems TOROS Consensus LLM")
+    parser = argparse.ArgumentParser(description="Yukon Systems TOROS Consensus LLM")
     parser.add_argument("-q", "--query", help="Prompt to ask via CLI")
     parser.add_argument("--web", action="store_true", help="Start web server instead of CLI")
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT", 8000)))
+    parser.add_argument("--mode", choices=["transparent", "quiet"], default="transparent", help="Output mode: full debate or only verdict & timing (with progress bar)")
     args = parser.parse_args()
 
     eng = build_engine()
@@ -417,5 +499,4 @@ if __name__ == "__main__":
         from consensus_web import make_app  # pseudo import placeholder
         uvicorn.run(make_app(eng), host="0.0.0.0", port=args.port)
     else:
-        run_cli(eng, args.query)
-
+        run_cli(eng, args.query, mode=args.mode)
