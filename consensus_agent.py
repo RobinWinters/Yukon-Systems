@@ -485,7 +485,6 @@ async def _ask(engine: ConsensusEngine, q: str, mode: str = "transparent"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Yukon Systems TOROS Consensus LLM")
-    parser = argparse.ArgumentParser(description="Yukon Systems TOROS Consensus LLM")
     parser.add_argument("-q", "--query", help="Prompt to ask via CLI")
     parser.add_argument("--web", action="store_true", help="Start web server instead of CLI")
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT", 8000)))

@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+htmx-tailwind
+aiohttp
+sse-starlette
+openai
+anthropic
+llama-cpp-python
+pyfiglet
+rich

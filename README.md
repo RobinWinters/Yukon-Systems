@@ -17,6 +17,11 @@ The engine enables richer, more robust LLM evaluation by orchestrating logical "
 
 ## Features
 
+- Async multi-round debate engine
+- Majority and confidence-weighted voting
+- Pluggable backend system (Ollama, Llama.cpp, OpenAI, Anthropic, etc.)
+- Rich CLI with colorized output and progress bars
+- Optional FastAPI web API
 
 ---
 
@@ -25,7 +30,7 @@ The engine enables richer, more robust LLM evaluation by orchestrating logical "
 ### 1. Install Requirements
 
 ```bash
-pip install fastapi uvicorn htmx-tailwind aiohttp sse-starlette openai anthropic llama-cpp-python pyfiglet rich
+pip install -r requirements.txt
 ```
 To use Ollama-served models, install [Ollama](https://ollama.com/) and make sure `ollama` daemon is running locally.
 
@@ -63,7 +68,7 @@ By default, the CLI will use all of: `Ollama (gemma)`, `Ollama (llama3-abliterat
 ```bash
 python consensus_agent.py --web
 ```
-Browse to [http://localhost:8000](http://localhost:8000).
+Browse to [http://localhost:8000](http://localhost:8000). Use `POST /api/ask` to query the engine programmatically.
 
 ---
 
