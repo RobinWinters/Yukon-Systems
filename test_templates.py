@@ -8,7 +8,7 @@ and reasoning quality evaluation.
 """
 
 import json
-from consensus_templates import (
+from yukon.templates import (
     detect_template,
     get_template_by_name,
     list_available_templates,

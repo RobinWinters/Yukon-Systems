@@ -315,7 +315,7 @@ class ReasoningBackend(LLMBackend):
         
     def _get_template(self, question: str):
         """Get the appropriate template for the question."""
-        from consensus_templates import detect_template, get_template_by_name
+        from .templates import detect_template, get_template_by_name
         
         # If a specific template name was provided, use that
         if self.template_name:

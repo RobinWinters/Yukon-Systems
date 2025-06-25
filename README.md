@@ -43,13 +43,13 @@ export LLAMA_MODEL=/models/llama.bin      # for Llama.cpp local
 ### 3. Run in CLI Mode
 
 ```bash
-python consensus_agent.py -q "Is Python better than Rust?"
+python -m yukon -q "Is Python better than Rust?"
 ```
 
 Or start interactive shell:
 
 ```bash
-python consensus_agent.py
+python -m yukon
 ```
 
 You’ll see an ASCII art title and a prompt (`>>`). Enter your question and see round-by-round debate, rationales, and a highlighted consensus!
@@ -61,7 +61,7 @@ By default, the CLI will use all of: `Ollama (gemma)`, `Ollama (llama3-abliterat
 ### 5. (Optional) Start as Web Server
 
 ```bash
-python consensus_agent.py --web
+python -m yukon --web
 ```
 Browse to [http://localhost:8000](http://localhost:8000).
 
@@ -106,7 +106,7 @@ Consensus by Confidence-Weighted: Paris
 ## How to Add More Models
 
 - Enable additional API keys in your environment; supported out of the box: OpenAI, Anthropic, Llama.cpp, Llama API, Ollama.
-- To add more Ollama local models, just duplicate/extend the lines in `build_engine()` in `consensus_agent.py`:
+- To add more Ollama local models, just duplicate/extend the lines in `build_engine()` in `yukon/agent.py`:
     ```python
     OllamaBackend("gemma", "gemma:latest"),
     OllamaBackend("llama3-abliterated", "superdrew100/llama3-abliterated:latest"),
@@ -119,9 +119,9 @@ Consensus by Confidence-Weighted: Paris
 
 | File                   | Description                              |
 |------------------------|------------------------------------------|
-| consensus_agent.py     | Main CLI, web, and engine orchestrator   |
-| consensus_backends.py  | Model backend adapters                   |
-| consensus_debate.py    | Debate, aggregation and prompt logic     |
+| yukon/agent.py         | Main CLI, web, and engine orchestrator   |
+| yukon/backends.py      | Model backend adapters                   |
+| yukon/debate.py        | Debate, aggregation and prompt logic     |
 | README.md              | This file                                |
 
 ---
