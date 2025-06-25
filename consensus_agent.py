@@ -252,41 +252,81 @@ class ConsensusEngine:
 # Build default engine                                                        #
 ###############################################################################
 
-def build_engine() -> ConsensusEngine:
+def build_model_registry() -> List['LLMBackend']:
+    """Build and return all *available* LLMBackend instances, unscreened for CLI/API selection."""
     from consensus_backends import (
         LlamaCppBackend,
         OllamaBackend,
         OpenAIBackend,
         AnthropicBackend,
         LlamaAPIBackend,
-    )  # pseudo‑import for brevity
-
+        ReasoningBackend,
+    )
     m: List['LLMBackend'] = []
     if path := os.getenv("LLAMA_MODEL"):
         m.append(LlamaCppBackend("llama-local", Path(path)))
-    m += [
+    # Define reasoning-optimized models - these models are particularly good at step-by-step reasoning
+    reasoning_models = [
+        OllamaBackend("llama3-70b", "llama3:70b"),
+        OllamaBackend("gemma2", "gemma2:latest"),
+        OllamaBackend("mistral", "mistral:latest"),
+        OllamaBackend("deepseek-coder", "deepseek-coder:latest"),  # Updated to use available model
+    ]
+    
+    # Standard models
+    standard_models = [
+        OllamaBackend("ARG_A", "ARG_A:latest"),
+        OllamaBackend("ARG_B", "ARG_B:latest"),
         OllamaBackend("gemma", "gemma:latest"),
         OllamaBackend("llama3-abliterated", "superdrew100/llama3-abliterated:latest"),
     ]
+    
+    # Add all models to registry
+    m += standard_models
+    
+    # Add reasoning-focused models
+    m += reasoning_models
     # if k := os.getenv("OPENAI_API_KEY"):
     #     m.append(OpenAIBackend("gpt4o", "gpt-4o", "https://api.openai.com/v1", k))
     # if k := os.getenv("META_API_KEY"):
     #     m.append(OpenAIBackend("llama3", "llama3-70b-chat", "https://api.meta.ai/v1", k))
+    # Add Claude 3 Opus (strong reasoning capabilities)
     if k := os.getenv("ANTHROPIC_API_KEY"):
-        m.append(AnthropicBackend("claude3", "claude-3-opus-20240229", k))
+        claude_backend = AnthropicBackend("claude3", "claude-3-opus-20240229", k)
+        m.append(claude_backend)
+        # Also add a reasoning-enhanced version of Claude
+        m.append(ReasoningBackend(claude_backend))
+        
     # Add Llama API backend if LLAMA_API_KEY is set
     if k := os.getenv("LLAMA_API_KEY"):
-        m.append(
-            LlamaAPIBackend(
-                "llama-api",
-                "Llama-4-Maverick-17B-128E-Instruct-FP8",
-                "https://api.llama.com/v1/chat/completions",
-                k,
-            )
+        llama_backend = LlamaAPIBackend(
+            "llama-api",
+            "Llama-4-Maverick-17B-128E-Instruct-FP8",
+            "https://api.llama.com/v1/chat/completions",
+            k,
         )
-    model_names = [backend.name for backend in m]
-    print(f"[build_engine] Instantiated backend models: {model_names}")
-    return ConsensusEngine(m)
+        m.append(llama_backend)
+        # Also add a reasoning-enhanced version of Llama API
+        m.append(ReasoningBackend(llama_backend))
+    return m
+
+def build_engine(selected_names: List[str]|None = None) -> ConsensusEngine:
+    """
+    Build a ConsensusEngine with only the selected model names.
+    If selected_names is None, use all available models.
+    """
+    registry = build_model_registry()
+    if selected_names is None:
+        filtered = registry
+    else:
+        names_lower = [n.lower() for n in selected_names]
+        filtered = [b for b in registry if b.name.lower() in names_lower]
+        # fallback to all if filter gives nothing
+        if not filtered:
+            filtered = registry[:3]
+    model_names = [backend.name for backend in filtered]
+    print(f"[build_engine] Active backend models: {model_names}")
+    return ConsensusEngine(filtered)
 
 ###############################################################################
 # FastAPI app (unchanged from v5, trimmed)                                    #
@@ -296,7 +336,7 @@ def build_engine() -> ConsensusEngine:
 # CLI                                                                         #
 ###############################################################################
 
-def print_help_and_settings(engine, default_rounds=3):
+def print_help_and_settings(engine, all_available_models=None, default_rounds=3):
     from rich.panel import Panel
     import os
     # Prepare the flags section as a consistently aligned table
@@ -328,12 +368,14 @@ def print_help_and_settings(engine, default_rounds=3):
     # --- Settings summary
     actives = [m.name for m in engine.models]
     rounds = default_rounds
+    available = [m for m in all_available_models] if all_available_models else actives
     env_keys = []
     for k in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "LLAMA_API_KEY", "LLAMA_MODEL"]:
         present = os.getenv(k, False)
         env_keys.append(f"{k}=[{'set' if present else 'unset'}]")
     settings = (
-        f"[bold white]Active LLMs:[/bold white] [cyan]{', '.join(actives)}[/cyan]\n"
+        f"[bold white]Available LLMs:[/bold white] [magenta]{', '.join(available)}[/magenta]\n"
+        f"[bold white]Active LLMs (selected):[/bold white] [cyan]{', '.join(actives)}[/cyan]\n"
         f"[bold white]Debate Rounds:[/bold white] [green]{rounds}[/green]\n"
         f"[bold white]Environment/Keys:[/bold white] {'  '.join(env_keys)}\n"
     )
@@ -343,9 +385,9 @@ def print_help_and_settings(engine, default_rounds=3):
     console.print(help_panel)
     console.print(settings_panel)
 
-def run_cli(engine: ConsensusEngine, query: str | None, mode: str = "transparent"):
+def run_cli(engine: ConsensusEngine, query: str | None, mode: str = "transparent", all_available_models=None):
     console.print(f"[cyan]{BANNER}[/]")
-    print_help_and_settings(engine)
+    print_help_and_settings(engine, all_available_models=all_available_models)
     if query:
         asyncio.run(_ask(engine, query, mode=mode))
         return
@@ -418,16 +460,20 @@ async def _ask(engine: ConsensusEngine, q: str, mode: str = "transparent"):
             round_table.add_column("Model", style="bold cyan")
             round_table.add_column("Answer", style="white")
             round_table.add_column("Conf.", justify="center", style="green")
+            round_table.add_column("Conf. Reasoning Time", style="yellow", justify="center")
             round_table.add_column("Reasoning", style="dim", overflow="fold")
             for midx, resp in enumerate(round_results):
                 model_name = model_names[midx] if midx < len(model_names) else f"Model{midx+1}"
                 ans = str(resp.get("answer", "")) if isinstance(resp, dict) else str(resp)
                 reasoning = str(resp.get("reasoning", "")) if isinstance(resp, dict) else ""
                 confidence = f"{float(resp.get('confidence', 0.0)):.2f}" if isinstance(resp, dict) else "0.00"
+                tval = resp.get("time", None)
+                timing_s = f"{tval:.2f}s" if isinstance(tval, (float, int)) else "—"
                 round_table.add_row(
                     f"[cyan]{model_name}[/]",
                     f"[white]{ans}[/]",
                     f"[green]{confidence}[/]",
+                    f"[yellow]{timing_s}[/]",
                     f"[dim]{reasoning}[/]"
                 )
             console.print(round_table)
@@ -444,15 +490,19 @@ async def _ask(engine: ConsensusEngine, q: str, mode: str = "transparent"):
         fin_table.add_column("Model", style="bold cyan")
         fin_table.add_column("Answer", style="white")
         fin_table.add_column("Conf.", style="green")
+        fin_table.add_column("Conf. Reasoning Time", style="yellow", justify="center")
         fin_table.add_column("Reasoning", style="dim", overflow="fold")
         for model, resp in result["results"]:
             ans = resp.get("answer", "") if isinstance(resp, dict) else str(resp)
             reasoning = resp.get("reasoning", "") if isinstance(resp, dict) else ""
             confidence = f"{float(resp.get('confidence', 0.0)):.2f}" if isinstance(resp, dict) else "0.00"
+            tval = resp.get("time", None)
+            timing_s = f"{tval:.2f}s" if isinstance(tval, (float, int)) else "—"
             fin_table.add_row(
                 f"[cyan]{model}[/]",
                 f"[white]{ans}[/]",
                 f"[green]{confidence}[/]",
+                f"[yellow]{timing_s}[/]",
                 f"[dim]{reasoning}[/]"
             )
         console.print(fin_table)
@@ -474,29 +524,96 @@ async def _ask(engine: ConsensusEngine, q: str, mode: str = "transparent"):
         if result.get("explanations"):
             console.print("\n[yellow bold]Rationales:[/]")
             for i, expl in enumerate(result.get("explanations", [])):
+                timing = None
+                # Try to find corresponding timing from agent_outputs/final round
+                try:
+                    timing = result.get("agent_outputs", [])[i].get("time")
+                except Exception:
+                    timing = None
+                timing_s = f"{timing:.2f}s" if isinstance(timing, (float, int)) else "—"
                 if expl:
-                    console.print(f"  [bold cyan]{model_names[i]}[/]: [dim]{expl}[/]")
-
+                    console.print(f"  [bold cyan]{model_names[i]}[/]: [yellow]{timing_s}[/] [dim]{expl}[/]")
+    
+    # Display error statistics if available
+    if "error_count" in result and "total_count" in result:
+        error_count = result["error_count"]
+        total_count = result["total_count"]
+        error_pct = (error_count / total_count) * 100 if total_count > 0 else 0
+        
+        # Choose color based on error percentage
+        error_color = "green" if error_pct < 25 else "yellow" if error_pct < 50 else "red"
+        
+        # Display error statistics
+        error_text = f"[{error_color}]Error responses: {error_count}/{total_count} ({error_pct:.1f}%)[/]"
+        console.print(error_text)
+        
+        # Display warning if high error rate
+        if error_pct >= 50:
+            console.print("[bold red]Warning:[/bold red] High rate of error responses detected. Results may be unreliable.")
+        elif error_pct >= 25:
+            console.print("[bold yellow]Note:[/bold yellow] Some error responses detected. Consider checking model availability.")
+            
     # Summary / aggregation time
-    console.rule(f"[green]Total consensus time: {total_time:.2f}s", style="bright_green")
 ###############################################################################
 # Entrypoint                                                                  #
 ###############################################################################
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Yukon Systems TOROS Consensus LLM")
-    parser = argparse.ArgumentParser(description="Yukon Systems TOROS Consensus LLM")
     parser.add_argument("-q", "--query", help="Prompt to ask via CLI")
     parser.add_argument("--web", action="store_true", help="Start web server instead of CLI")
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT", 8000)))
     parser.add_argument("--mode", choices=["transparent", "quiet"], default="transparent", help="Output mode: full debate or only verdict & timing (with progress bar)")
+    parser.add_argument("--models", help="Comma-separated list of model names (e.g., gemma,arb_a,llama3-abliterated) to enable")
     args = parser.parse_args()
 
-    eng = build_engine()
+    # Build the registry just once early for prompt and help display
+    all_registry = build_model_registry()
+    all_available_names = [m.name for m in all_registry]
+
+    selected_models = None
+
+    if args.models:
+        # Use the --models flag to select which backends to use
+        wanted = [s.strip() for s in args.models.split(",") if s.strip()]
+        selected_models = wanted
+    else:
+        # Interactive selection if not provided (just in CLI mode)
+        if not args.web:
+            from rich.prompt import Prompt
+            from rich.table import Table
+
+            console.print("[magenta bold]Choose which models to ENABLE for this session:[/]")
+            table = Table(show_header=True, header_style="bold magenta", box=None, expand=False, padding=(0,1))
+            table.add_column("#", style="bold cyan", justify="center")
+            table.add_column("Model Name", style="bold", justify="left")
+            table.add_column("Backend/Tag", style="dim", justify="left")
+            for idx, backend in enumerate(all_registry):
+                # For readability, display backend tag if available
+                tag_hint = getattr(backend, "tag", getattr(backend, "model_path", ""))
+                table.add_row(f"{idx+1}", backend.name, str(tag_hint))
+            console.print(table)
+            console.print("[yellow]Enter [cyan]numbers[/cyan] (comma-separated) for models to enable (e.g., [green]1,3,4[/green]):")
+            raw = Prompt.ask("Models", default="1,2,3")
+            try:
+                nums = [int(s)-1 for s in raw.split(",") if s.strip().isdigit()]
+                selected_names = [all_registry[i].name for i in nums if 0 <= i < len(all_registry)]
+                if not selected_names:
+                    # fallback to first three
+                    selected_names = all_available_names[:3]
+                selected_models = selected_names
+            except Exception:
+                selected_models = all_available_names[:3]
+
+    # If nothing selected by flag or prompt, default to first 3
+    if not selected_models or not any(n in all_available_names for n in selected_models):
+        selected_models = all_available_names[:3]
+
+    eng = build_engine(selected_models)
 
     if args.web:
         import uvicorn
         from consensus_web import make_app  # pseudo import placeholder
         uvicorn.run(make_app(eng), host="0.0.0.0", port=args.port)
     else:
-        run_cli(eng, args.query, mode=args.mode)
+        run_cli(eng, args.query, mode=args.mode, all_available_models=all_available_names)

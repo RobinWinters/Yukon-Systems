@@ -1,0 +1,12 @@
+# OS / editor cruft
+.DS_Store
+
+# Python
+__pycache__/
+venv/
+
+# Project runtime/output folders
+eve_logs/
+eve_autogpt_shared/
+eve_data/
+eve_workspace/
