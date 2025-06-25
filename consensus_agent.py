@@ -23,11 +23,144 @@ pip install fastapi uvicorn htmx-tailwind aiohttp sse-starlette \
 ```
 `pyfiglet` generates the ASCII art; `rich` adds color to CLI output.
 """
-from __future__ import annotations
 
-import argparse
+# -------------------------------------------------------------------------------
+"""
+CONSENSUS ENGINE & AGGREGATION LOGIC — COMPARISON DOCUMENTATION
+-------------------------------------------------------------------------------
+
+1. consensus_agent.py / consensus_backends.py (“YUKON/Toros” agent)
+
+Consensus architecture:
+- Provider-agnostic consensus engine.
+- Modular LLM backend interface (`LLMBackend` abstract class in consensus_backends.py).
+- Multiple LLM providers easily plugged into unified workflow via backend subclasses (OpenAI, Anthropic, Llama.cpp, etc.).
+
+Consensus/voting logic:
+- Single-round answer aggregation.
+- Each model runs on the input question independently.
+- Their outputs are collected into a list.
+- Majority vote implemented (`majority_vote(out: List[str]) -> str`), which picks the most common answer among the models.
+- No explicit confidence tracking, stepwise debate, or answer justification.
+
+Aggregation and final answer:
+- Only majority-based consensus used.
+- No explanations, confidence, or iterative debate among agents.
+- Focus is on routing/model invocation and simple result aggregation.
+
+Orchestration:
+- Command-line tool, web UI, and API interface; pipeline driven by user input and routed to backends.
+
+# -------------------------------------------------------------------------------
+2. ReConcile/generation.py and ReConcile/utils.py
+
+Consensus architecture:
+- Multi-model orchestration with explicit *multi-round group debate* logic.
+- Integrates OpenAI, Claude, PaLM, etc., with procedural orchestration (may require some refactor for async).
+
+Consensus/voting logic:
+- Multi-stage debate & confidence tracking:
+  - First, each model answers independently (“round 0”).
+  - Results are aggregated and structured (answers, explanations, and model confidence).
+  - “Debate prompts” are constructed highlighting disagreement and providing group context.
+  - Additional rounds: models review others’ answers/explanations + debate prompts, then re-answer with more information each time.
+- Voting:
+  - Both simple majority vote and *confidence-weighted voting* available.
+  - Votes tracked: answers (`majority_ans`), explanations, and confidence (`weighted_vote`).
+  - Explicit logic for constructing the debate prompt (Counter tallies votes, explanations grouped by answer).
+
+Aggregation and final answer:
+- For each round:
+  - `vote_N`: all model predictions in that round.
+  - `majority_ans_N`: most common answer.
+  - `weighted_max_N`: answer with the highest combined (transformed) confidence scores across models.
+  - Full explanations and confidence levels included for each model and round.
+  - Prompts for further debate if not all agents agree.
+- Result is not just the answer:
+  - Dictionary per sample containing all agent outputs, explanations, confidence, meta-evaluation fields for further analysis/experiments.
+- Meta-evaluation utilities: Accuracy calculated for each voting mode, for detailed benchmarking.
+
+Orchestration:
+- Dataset-driven experimentation (batch-running over many QA tasks).
+- Models called with explicit context prep including other agent answers in later rounds.
+
+# -------------------------------------------------------------------------------
+
+Summary Table
+
+| Feature                   | consensus_agent.py          | ReConcile                         |
+|---------------------------|----------------------------|-----------------------------------|
+| Models                    | Arbitrary (pluggable sync/async backends) | OpenAI, Claude, PaLM, pluggable  |
+| Aggregation Logic         | Single-round, majority vote| Multi-round, majority & confidence|
+| Explanation Tracking      | No                         | Yes                               |
+| Confidence Tracking       | No                         | Yes (agent self-scored + weighted)|
+| Debate Mechanism          | No                         | Yes (prompt, response, re-debate) |
+| Dataset/Bulk Support      | Limited                    | Integrated (SQA, Aqua, etc.)      |
+| Orchestration             | CLI/API/WebUI, per-query   | Batch/task-focused                |
+| Meta-Evaluation           | No                         | Yes (accuracy by method, etc.)    |
+
+# -------------------------------------------------------------------------------
+
+Implications for Integration
+
+- Your agent’s backend system aligns well with ReConcile’s model calling interface.
+- Current consensus logic is simple (majority vote); ReConcile provides all utilities for debate, confidence voting, and structured aggregation.
+- Integrating debate and confidence scoring requires porting certain context prep, voting, and result aggregation functions, plus possible refactoring for async interface harmony.
+
+# -------------------------------------------------------------------------------
+
+INTERFACE INTEGRATION OPPORTUNITIES: YUKON <-> ReConcile
+# -------------------------------------------------------------------------------
+
+-- Key control points in your consensus_agent.py workflow:
+   1. Model invocation/aggregation (ConsensusEngine.query): where all model answers are gathered and voted.
+   2. CLI/Web debate mode: supports multiple "rounds", extensible for ReConcile-style debate, aggregation, and result structuring.
+
+-- ReConcile debate/aggregation functions:
+   - N rounds of multi-model, prompt-aware answering across multiple agents.
+   - Aggregation builds explanations/confidence, selects majority/weighted, forms "debate prompt."
+
+-- Direct integration points (with API notes):
+   - After each round, aggregate using new voting/aggregation helpers.
+   - Iterate, passing new debate prompt/context if agents disagree.
+   - Refactor legacy paths to use dict/structured output from all backends.
+
+-- API/async adaptation required:
+   - Port aggregation helpers to run over async batch results.
+   - Make backends return dict {"answer", "reasoning", "confidence"}.
+
+-- Opportunities for code re-use:
+   - Port ReConcile aggregation/debate functions as helpers.
+   - Use modular backends to compose new consensus workflows.
+
+# -------------------------------------------------------------------------------
+
+INTEGRATION ROADMAP: ReConcile Features -> Yukon Consensus System
+# -------------------------------------------------------------------------------
+
+1. Feature Prioritization
+  [P1] Structured Explanation Returns + Confidence
+  [P2] Confidence-Weighted and Majority Voting
+  [P3] Debate Prompt Construction & Multi-Round Debate
+  [P4] Meta-Evaluation Helpers (Accuracy, Analysis)
+
+2. Code Refactor/Adaptation Checklist
+  [A] Backend Results API Harmonization
+  [B] Async Wrapping/Bridging
+  [C] Debate Manager / Aggregation Utility Module Boundaries
+  [D] Batch vs. Single Query Normalization
+
+3. Example Proposed Interface Stubs
+  class LLMBackend(ABC):   ...   async def complete(self, prompt: str) -> dict: ...
+  class DebateManager:     ...   async def debate(self, prompt: str) -> dict: ...
+
+This roadmap enables modular, selective porting of ReConcile's advanced consensus features,
+while ensuring compatibility and maintainability with your async, backend-agnostic system.
+# -------------------------------------------------------------------------------
+"""
 import asyncio
 import os
+import argparse
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,21 +204,49 @@ class ConsensusEngine:
     vote_fn: Callable[[List[str]], str] = majority_vote
     safety_fn: Callable[[str], bool] = basic_safety
 
-    async def query(self, prompt: str):
-        # Gather all (model_name, answer) pairs
+    async def query(self, prompt: str, use_debate: bool = True, rounds: int = 3):
+        """
+        If use_debate, run multi-round consensus using DebateManager.
+        Otherwise, fall back to single-round legacy mode for testing/fallback.
+        """
+        if use_debate:
+            from consensus_debate import DebateManager
+            debate_mgr = DebateManager(self.models, rounds=rounds)
+            result = await debate_mgr.debate(prompt)
+            # For legacy interface: expose agent_outputs list and majority/weighted answer
+            outs = [(self.models[i].name, agent) for i, agent in enumerate(result["agent_outputs"])]
+            ans_majority = result.get("winner_majority")
+            ans_weighted = result.get("winner_weighted")
+            explanations = result.get("explanations", [])
+            return {
+                "results": outs,
+                "majority": ans_majority,
+                "confidence_weighted": ans_weighted,
+                "explanations": explanations,
+                "rounds": result["rounds"]
+            }
+        # --- Legacy single-round fallback mode
         outs = await asyncio.gather(*(m.complete(prompt) for m in self.models), return_exceptions=True)
         results = []
         for i, o in enumerate(outs):
-            if isinstance(o, str) and o:
+            # o is guaranteed dict as of new backend API
+            if isinstance(o, dict) and o.get("answer"):
                 results.append((self.models[i].name, o))
+            elif isinstance(o, str) and o:
+                results.append((self.models[i].name, {"answer": o, "reasoning": "", "confidence": 0.0}))
         if not results:
             raise RuntimeError("All model calls failed")
-        # Use only the answers for voting/safety as before, but return (name, answer) pairs
-        answers = [res[1] for res in results]
+        answers = [res[1]["answer"] for res in results]
         ans = self.vote_fn(answers)
         if not self.safety_fn(ans):
             raise RuntimeError("Consensus answer failed safety gate")
-        return results, ans
+        return {
+            "results": results,
+            "majority": ans,
+            "confidence_weighted": None,
+            "explanations": [r[1].get("reasoning", "") for r in results],
+            "rounds": [ [r[1] for r in results] ]
+        }
 
 ###############################################################################
 # Build default engine                                                        #
@@ -103,7 +264,10 @@ def build_engine() -> ConsensusEngine:
     m: List['LLMBackend'] = []
     if path := os.getenv("LLAMA_MODEL"):
         m.append(LlamaCppBackend("llama-local", Path(path)))
-    m += [OllamaBackend("gemma", "gemma:latest")]
+    m += [
+        OllamaBackend("gemma", "gemma:latest"),
+        OllamaBackend("llama3-abliterated", "superdrew100/llama3-abliterated:latest"),
+    ]
     # if k := os.getenv("OPENAI_API_KEY"):
     #     m.append(OpenAIBackend("gpt4o", "gpt-4o", "https://api.openai.com/v1", k))
     # if k := os.getenv("META_API_KEY"):
@@ -120,6 +284,8 @@ def build_engine() -> ConsensusEngine:
                 k,
             )
         )
+    model_names = [backend.name for backend in m]
+    print(f"[build_engine] Instantiated backend models: {model_names}")
     return ConsensusEngine(m)
 
 ###############################################################################
@@ -130,10 +296,58 @@ def build_engine() -> ConsensusEngine:
 # CLI                                                                         #
 ###############################################################################
 
-def run_cli(engine: ConsensusEngine, query: str | None):
+def print_help_and_settings(engine, default_rounds=3):
+    from rich.panel import Panel
+    import os
+    # Prepare the flags section as a consistently aligned table
+    flag_lines = [
+        ("-q",     "PROMPT", "Run a single CLI question and exit"),
+        ("--web",  "",       "Start browser/server UI (http://localhost:8000)"),
+        ("--port", "N",      "Set web server port (default 8000)"),
+        ("--mode", "MODE",   'Select output mode: "transparent" (default, shows full debate) or "quiet" (progress bar + verdict only)'),
+        ("--help", "",       "Show this usage info"),
+    ]
+    flag_fmt = "  [cyan]{:<7}[/cyan] [magenta]{:<8}[/magenta]  [white]{}[/white]"
+    flag_table = "[bold yellow]Flags:[/bold yellow]\n" + "\n".join(
+        flag_fmt.format(flag, param, desc) for flag, param, desc in flag_lines
+    )
+
+    help_text = f"""[bold white]Usage:[/bold white]  [green]python consensus_agent.py [--web] [-q 'Your question'][/green]
+
+{flag_table}
+
+[bold yellow]CLI Example:[/bold yellow]
+  [green]python consensus_agent.py -q "What is the capital of France?"[/green]
+
+[bold white]Interactive Use:[/bold white]
+  [green]python consensus_agent.py[/green] and enter your query at the [bold green]>>[/] prompt.
+
+[bold yellow]Shortcuts:[/bold yellow]  [cyan]Ctrl+C[/cyan] or EOF (Ctrl+D) to quit.
+"""
+
+    # --- Settings summary
+    actives = [m.name for m in engine.models]
+    rounds = default_rounds
+    env_keys = []
+    for k in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "LLAMA_API_KEY", "LLAMA_MODEL"]:
+        present = os.getenv(k, False)
+        env_keys.append(f"{k}=[{'set' if present else 'unset'}]")
+    settings = (
+        f"[bold white]Active LLMs:[/bold white] [cyan]{', '.join(actives)}[/cyan]\n"
+        f"[bold white]Debate Rounds:[/bold white] [green]{rounds}[/green]\n"
+        f"[bold white]Environment/Keys:[/bold white] {'  '.join(env_keys)}\n"
+    )
+
+    help_panel = Panel.fit(help_text, style="bold magenta", border_style="magenta", title="[bold yellow]HELP[/bold yellow]", title_align="left")
+    settings_panel = Panel.fit(settings, style="bold green", border_style="green", title="[bold white]SETTINGS[/bold white]", title_align="left")
+    console.print(help_panel)
+    console.print(settings_panel)
+
+def run_cli(engine: ConsensusEngine, query: str | None, mode: str = "transparent"):
     console.print(f"[cyan]{BANNER}[/]")
+    print_help_and_settings(engine)
     if query:
-        asyncio.run(_ask(engine, query))
+        asyncio.run(_ask(engine, query, mode=mode))
         return
     while True:
         try:
@@ -141,83 +355,141 @@ def run_cli(engine: ConsensusEngine, query: str | None):
         except (KeyboardInterrupt, EOFError):
             console.print("\nGoodbye!")
             break
-        asyncio.run(_ask(engine, q))
+        asyncio.run(_ask(engine, q, mode=mode))
 
-async def _ask(engine: ConsensusEngine, q: str):
-    num_rounds = 3  # Total back-and-forth rounds (including first)
-    prompts = [q, q]  # One per model
-    if len(engine.models) != 2:
-        console.print("[red]Debate mode is supported for exactly two models.[/]")
-        # fallback to regular "all answer once"
-        with console.status("[bold yellow]Thinking…[/]"):
+async def _ask(engine: ConsensusEngine, q: str, mode: str = "transparent"):
+    num_rounds = 3  # debate rounds if using new consensus
+    use_debate = True  # set to False for legacy fallback mode (single round)
+    import time
+    start_time = time.monotonic()
+
+    # -------------------------
+    # Progress bar for "quiet" mode:
+    show_full = (mode == "transparent")
+    result = None
+    if not show_full:
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+        bar = Progress(
+            SpinnerColumn(),
+            TextColumn("[yellow]Debating…[/yellow]"),
+            BarColumn(),
+            TimeElapsedColumn(),
+            expand=True
+        )
+        with bar:
+            # Assume debate across N rounds: estimate progress as rounds complete
+            # If backend implementation gets progress callback in future, hook it here.
+            task = bar.add_task("[bold green]Consensus running...", total=num_rounds)
+            # We'll just tick the progress bar once per expected round for now.
+            from asyncio import sleep
+            for n in range(num_rounds):
+                # Simulate per-round progress—remove if engine exposes callback in the future
+                bar.update(task, advance=1)
+                await sleep(0.1)  # Just animation pacing until result returns
             try:
-                results, ans = await engine.query(q)
+                result = await engine.query(q, use_debate=True, rounds=num_rounds)
             except Exception as e:
+                bar.stop()
                 console.print(f"[red]Error:[/] {e}")
                 return
-        for model, resp in results:
-            console.print(f"[magenta][{model}][/]: {resp}")
-        console.print(f"\n[bold white]Consensus:[/] {ans}\n")
-        return
+            bar.update(task, completed=num_rounds)
+    else:
+        try:
+            with console.status("[bold yellow]Aggregating multi-model consensus…[/]"):
+                result = await engine.query(q, use_debate=use_debate, rounds=num_rounds)
+        except Exception as e:
+            console.print(f"[red]Error:[/] {e}")
+            return
 
-    # Two models: explicit debate mode
+    # ---------- Output/results ----------
+    rounds = result.get("rounds", [])
     model_names = [m.name for m in engine.models]
-    last_responses = [q, q]
+    from rich.panel import Panel
+    from rich.text import Text
     import time
-    overall_start = time.monotonic()
-    per_model_times = [[], []]  # times[i][round]
-    for round_i in range(num_rounds):
-        with console.status(f"[bold yellow]Round {round_i+1}…[/]"):
-            outs = []
-            times = []
-            # Always [0] then [1]
-            for idx in (0, 1):
-                prompt = prompts[idx]
-                model = model_names[idx]
-                console.print(f"[yellow][{model} | round {round_i+1} | thinking...][/]")
-                t0 = time.monotonic()
-                try:
-                    resp = await engine.models[idx].complete(prompt)
-                except Exception as e:
-                    resp = f"[Error: {e}]"
-                delta = time.monotonic() - t0
-                times.append(delta)
-                outs.append(resp)
-                per_model_times[idx].append(delta)
-        # Print both responses with timing
-        for idx, (model, resp) in enumerate(zip(model_names, outs)):
-            t = times[idx]
-            console.print(f"[bold cyan][{model} | round {round_i+1} | {t:.2f}s][/]: {resp}")
-        # For next round, alternating: give each model the other's answer as prompt
-        prompts = [outs[1], outs[0]]
-    total_time = time.monotonic() - overall_start
+    total_time = time.monotonic() - start_time
 
-    # Optionally, majority vote at the end using all last responses
-    try:
-        ans = engine.vote_fn(outs)
-        if not engine.safety_fn(ans):
-            raise RuntimeError("Consensus answer failed safety gate")
-        console.print(f"\n[bold white]Consensus:[/] {ans}\n")
-        console.print(
-            f"[green]Total debate time:[/] {total_time:.2f}s "
-            f"({model_names[0]} avg/round: {sum(per_model_times[0])/num_rounds:.2f}s, "
-            f"{model_names[1]} avg/round: {sum(per_model_times[1])/num_rounds:.2f}s)\n"
+    if show_full:
+        console.rule("[bold white]🗣️ Debate History (Round-by-Round)[/]")
+        for ridx, round_results in enumerate(rounds, 1):
+            console.rule(f"[bold yellow]Round {ridx}[/]", style="yellow", characters="─")
+            from rich.table import Table
+            round_table = Table(show_header=True, header_style="bold magenta", box=None, expand=False, padding=(0,1))
+            round_table.add_column("Model", style="bold cyan")
+            round_table.add_column("Answer", style="white")
+            round_table.add_column("Conf.", justify="center", style="green")
+            round_table.add_column("Reasoning", style="dim", overflow="fold")
+            for midx, resp in enumerate(round_results):
+                model_name = model_names[midx] if midx < len(model_names) else f"Model{midx+1}"
+                ans = str(resp.get("answer", "")) if isinstance(resp, dict) else str(resp)
+                reasoning = str(resp.get("reasoning", "")) if isinstance(resp, dict) else ""
+                confidence = f"{float(resp.get('confidence', 0.0)):.2f}" if isinstance(resp, dict) else "0.00"
+                round_table.add_row(
+                    f"[cyan]{model_name}[/]",
+                    f"[white]{ans}[/]",
+                    f"[green]{confidence}[/]",
+                    f"[dim]{reasoning}[/]"
+                )
+            console.print(round_table)
+            console.print()
+        # Display per-model responses for the final round
+        final_panel = Panel.fit(
+            "[b white]Model Responses (Final Round)[/]",
+            border_style="blue",
+            title="[bold blue] Final Output [/]",
+            title_align="center",
         )
-    except Exception as e:
-        console.print(f"[yellow]No consensus or failed safety: {e}[/]")
-        console.print(
-            f"[green]Total debate time:[/] {total_time:.2f}s\n"
-        )
+        console.print(final_panel)
+        fin_table = Table(show_header=True, header_style="bold magenta", box=None, expand=False, padding=(0,1))
+        fin_table.add_column("Model", style="bold cyan")
+        fin_table.add_column("Answer", style="white")
+        fin_table.add_column("Conf.", style="green")
+        fin_table.add_column("Reasoning", style="dim", overflow="fold")
+        for model, resp in result["results"]:
+            ans = resp.get("answer", "") if isinstance(resp, dict) else str(resp)
+            reasoning = resp.get("reasoning", "") if isinstance(resp, dict) else ""
+            confidence = f"{float(resp.get('confidence', 0.0)):.2f}" if isinstance(resp, dict) else "0.00"
+            fin_table.add_row(
+                f"[cyan]{model}[/]",
+                f"[white]{ans}[/]",
+                f"[green]{confidence}[/]",
+                f"[dim]{reasoning}[/]"
+            )
+        console.print(fin_table)
 
+    # Display consensus verdicts as boxed/highlighted text — always show these
+    consensus_txt = Text.assemble(
+        ("Consensus by Majority: ", "bold white"), (str(result["majority"]), "green bold")
+    )
+    console.rule("[bold]Verdicts[/]", style="bold green", characters="─")
+    console.print(Panel.fit(consensus_txt, border_style="green", subtitle="Majority", subtitle_align="right"))
+    if result.get("confidence_weighted") is not None:
+        wtxt = Text.assemble(
+            ("Consensus by Confidence-Weighted: ", "bold white"), (str(result["confidence_weighted"]), "yellow bold")
+        )
+        console.print(Panel.fit(wtxt, border_style="yellow", subtitle="Weighted", subtitle_align="right"))
+
+    # Rationales (skip in quiet if none)
+    if show_full or result.get("explanations"):
+        if result.get("explanations"):
+            console.print("\n[yellow bold]Rationales:[/]")
+            for i, expl in enumerate(result.get("explanations", [])):
+                if expl:
+                    console.print(f"  [bold cyan]{model_names[i]}[/]: [dim]{expl}[/]")
+
+    # Summary / aggregation time
+    console.rule(f"[green]Total consensus time: {total_time:.2f}s", style="bright_green")
 ###############################################################################
 # Entrypoint                                                                  #
 ###############################################################################
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Yukon Systems TOROS Consensus LLM")
+    parser = argparse.ArgumentParser(description="Yukon Systems TOROS Consensus LLM")
     parser.add_argument("-q", "--query", help="Prompt to ask via CLI")
     parser.add_argument("--web", action="store_true", help="Start web server instead of CLI")
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT", 8000)))
+    parser.add_argument("--mode", choices=["transparent", "quiet"], default="transparent", help="Output mode: full debate or only verdict & timing (with progress bar)")
     args = parser.parse_args()
 
     eng = build_engine()
@@ -227,5 +499,4 @@ if __name__ == "__main__":
         from consensus_web import make_app  # pseudo import placeholder
         uvicorn.run(make_app(eng), host="0.0.0.0", port=args.port)
     else:
-        run_cli(eng, args.query)
-
+        run_cli(eng, args.query, mode=args.mode)

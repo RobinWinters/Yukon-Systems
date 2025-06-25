@@ -3,7 +3,14 @@
 Modular backend definitions for use with consensus_agent.py.
 
 Each backend implements the LLMBackend interface, providing
-an async `complete(prompt: str) -> str` method for uniform multi-model inference.
+an async `complete(prompt: str) -> dict` method for uniform multi-model inference.
+
+Return value:
+    Dict[str, Any] with required keys:
+        "answer": str,
+        "reasoning": str (may be empty for mock/data-free models),
+        "confidence": float (0.0 for mocks/defaults)
+For backward compatibility, if a string is returned, it will be wrapped as dict.
 Production implementations should subclass LLMBackend and override
 the `complete` method with real model or API calls.
 
@@ -28,15 +35,19 @@ class LLMBackend(ABC):
         self.name = name
 
     @abstractmethod
-    async def complete(self, prompt: str) -> str:
+    async def complete(self, prompt: str) -> dict:
         """
-        Issue a prompt to this backend and return a response string.
+        Issue a prompt to this backend and return a response dict for consensus flows.
 
         Args:
             prompt: The input prompt to provide to the model.
 
         Returns:
-            str: The backend/model's raw text response.
+            dict: {
+                "answer": str,        # The main response from the model
+                "reasoning": str,     # Model's explanation, may be empty for mocks
+                "confidence": float   # 0.0 by default; real models may estimate/probabilistically derive this
+            }
         """
         pass
 
@@ -50,10 +61,14 @@ class LlamaCppBackend(LLMBackend):
         super().__init__(name)
         self.path = path
 
-    async def complete(self, prompt: str) -> str:
+    async def complete(self, prompt: str) -> dict:
         # Mock response; replace with llama-cpp model invocation
         await asyncio.sleep(0.05)
-        return f"(Mock LlamaCpp: {self.name}, model file: {self.path}) => {prompt}"
+        return {
+            "answer": f"(Mock LlamaCpp: {self.name})",
+            "reasoning": f"Given the prompt: {prompt}",
+            "confidence": 0.0
+        }
 
 class OllamaBackend(LLMBackend):
     """
@@ -71,7 +86,7 @@ class OllamaBackend(LLMBackend):
         self.model = model
         self.api_url = "http://localhost:11434/api/generate"
 
-    async def complete(self, prompt: str) -> str:
+    async def complete(self, prompt: str) -> dict:
         """Send the prompt to local Ollama API or fallback to mock if it fails."""
         try:
             async with aiohttp.ClientSession() as session:
@@ -83,13 +98,25 @@ class OllamaBackend(LLMBackend):
                 async with session.post(self.api_url, json=payload, timeout=60) as resp:
                     if resp.status != 200:
                         msg = await resp.text()
-                        return f"[Ollama API error {resp.status}]: {msg}"
+                        return {
+                            "answer": f"[Ollama API error {resp.status}]",
+                            "reasoning": msg,
+                            "confidence": 0.0
+                        }
                     data = await resp.json()
-                    # Ollama returns {"response": "..."} or list of stream chunks if stream True
-                    return data.get("response", "").strip() or "[Ollama API empty response]"
+                    response = data.get("response", "").strip() or "[Ollama API empty response]"
+                    return {
+                        "answer": response,
+                        "reasoning": f"Ollama ({self.name}): returned response string",
+                        "confidence": 0.0
+                    }
         except Exception as e:
             # If running in offline/test mode, fallback to mock
-            return f"(Mock Ollama: {self.name}, model: {self.model}) [API err: {str(e)}] => {prompt}"
+            return {
+                "answer": f"(Mock Ollama: {self.name})",
+                "reasoning": f"[API error: {str(e)}], prompt: {prompt}",
+                "confidence": 0.0
+            }
 
 class OpenAIBackend(LLMBackend):
     """
@@ -107,10 +134,14 @@ class OpenAIBackend(LLMBackend):
         self.endpoint = endpoint
         self.api_key = api_key
 
-    async def complete(self, prompt: str) -> str:
+    async def complete(self, prompt: str) -> dict:
         # Mock response; replace with actual OpenAI API request
         await asyncio.sleep(0.05)
-        return f"(Mock OpenAI: {self.name}, model: {self.model}, endpoint: {self.endpoint}) => {prompt}"
+        return {
+            "answer": f"(Mock OpenAI: {self.name})",
+            "reasoning": f"Prompted with: {prompt}",
+            "confidence": 0.0
+        }
 
 class AnthropicBackend(LLMBackend):
     """
@@ -126,10 +157,14 @@ class AnthropicBackend(LLMBackend):
         self.model = model
         self.api_key = api_key
 
-    async def complete(self, prompt: str) -> str:
+    async def complete(self, prompt: str) -> dict:
         # Mock response; replace with actual Anthropic API call
         await asyncio.sleep(0.05)
-        return f"(Mock Anthropic: {self.name}, model: {self.model}) => {prompt}"
+        return {
+            "answer": f"(Mock Anthropic: {self.name})",
+            "reasoning": f"Model '{self.model}' prompt: {prompt}",
+            "confidence": 0.0
+        }
 
 # -------------------------------------------------------------------------
 class LlamaAPIBackend(LLMBackend):
@@ -165,13 +200,17 @@ class LlamaAPIBackend(LLMBackend):
         self.endpoint = endpoint
         self.api_key = api_key
 
-    async def complete(self, prompt: str) -> str:
+    async def complete(self, prompt: str) -> dict:
         """
-        Send a prompt to the Llama API for completion and return the model output.
+        Send a prompt to the Llama API for completion and return the model output as a dict.
         Falls back to a mock result if any error occurs.
         """
         if not self.api_key:
-            return f"[LlamaAPIBackend error]: No API key provided for {self.endpoint}"
+            return {
+                "answer": f"[LlamaAPIBackend error]: No API key for {self.endpoint}",
+                "reasoning": "",
+                "confidence": 0.0
+            }
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
@@ -188,7 +227,11 @@ class LlamaAPIBackend(LLMBackend):
                 async with session.post(self.endpoint, headers=headers, json=payload, timeout=60) as resp:
                     if resp.status != 200:
                         msg = await resp.text()
-                        return f"[Llama API error {resp.status}]: {msg}"
+                        return {
+                            "answer": f"[Llama API error {resp.status}]",
+                            "reasoning": msg,
+                            "confidence": 0.0
+                        }
                     data = await resp.json()
                     # Robust response parsing:
                     # Llama API final format: check "completion_message.content.text" first
@@ -197,22 +240,33 @@ class LlamaAPIBackend(LLMBackend):
                         and "content" in data["completion_message"]
                         and "text" in data["completion_message"]["content"]
                     ):
-                        return data["completion_message"]["content"]["text"].strip()
+                        ans = data["completion_message"]["content"]["text"].strip()
+                        return {"answer": ans, "reasoning": "", "confidence": 0.0}
                     if "choices" in data and data["choices"]:
                         choice = data["choices"][0]
-                        # OpenAI Chat style: {"message": {"role": "assistant", "content": "text"}}
+                        # OpenAI Chat style
                         if "message" in choice and "content" in choice["message"]:
-                            return choice["message"]["content"].strip()
-                        # OpenAI (non-chat) style: {"text": "..."}
+                            ans = choice["message"]["content"].strip()
+                            return {"answer": ans, "reasoning": "", "confidence": 0.0}
                         if "text" in choice:
-                            return choice["text"].strip()
+                            ans = choice["text"].strip()
+                            return {"answer": ans, "reasoning": "", "confidence": 0.0}
                     if "result" in data:
-                        return data["result"]
+                        ans = data["result"]
+                        return {"answer": ans, "reasoning": "", "confidence": 0.0}
                     # Fallback: return the full response JSON for visibility
                     import json
-                    return f"[Llama API: {json.dumps(data)}]"
+                    return {
+                        "answer": f"[Llama API: {json.dumps(data)}]",
+                        "reasoning": "",
+                        "confidence": 0.0
+                    }
         except Exception as e:
-            return f"(Mock LlamaAPIBackend: {self.name}, model: {self.model}) [API err: {str(e)}] => {prompt}"
+            return {
+                "answer": f"(Mock LlamaAPIBackend: {self.name})",
+                "reasoning": f"[API err: {str(e)}] => {prompt}",
+                "confidence": 0.0
+            }
 
 if __name__ == "__main__":
     # Example test demonstrating construction and invocation of all backends
