@@ -17,13 +17,6 @@ The engine enables richer, more robust LLM evaluation by orchestrating logical "
 
 ## Features
 
-- ⚡ Simultaneous multi-model inference (Ollama, Llama API, OpenAI, etc.)
-- 🔄 Multi-round group debate, with evolving context and explanations
-- 🗣️ Step-by-step display: see how LLMs challenge, adapt, and agree on answers
-- 📝 Per-model rationales and confidence, all aligned in color-coded tables
-- 🏆 Final consensus verdict (by majority and by weighted voting)
-- 🎨 Rich CLI output (using `rich` & `pyfiglet`)
-- 🌐 Web browser chat interface, JSON API (optional by flag)
 
 ---
 
