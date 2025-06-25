@@ -7,7 +7,7 @@ Provider‑agnostic **multi‑model consensus engine** with:
 • JSON / SSE API endpoints (`/api/ask`, `/api/stream`)
 • **Command‑line interface** (CLI):
   ```bash
-  python consensus_agent.py -q "Your question here"
+  python -m yukon -q "Your question here"
   ```
   Prints a **Toros‑style ASCII banner** on start‑up:
 
@@ -210,7 +210,7 @@ class ConsensusEngine:
         Otherwise, fall back to single-round legacy mode for testing/fallback.
         """
         if use_debate:
-            from consensus_debate import DebateManager
+            from .debate import DebateManager
             debate_mgr = DebateManager(self.models, rounds=rounds)
             result = await debate_mgr.debate(prompt)
             # For legacy interface: expose agent_outputs list and majority/weighted answer
@@ -254,7 +254,7 @@ class ConsensusEngine:
 
 def build_model_registry() -> List['LLMBackend']:
     """Build and return all *available* LLMBackend instances, unscreened for CLI/API selection."""
-    from consensus_backends import (
+    from .backends import (
         LlamaCppBackend,
         OllamaBackend,
         OpenAIBackend,
@@ -352,15 +352,15 @@ def print_help_and_settings(engine, all_available_models=None, default_rounds=3)
         flag_fmt.format(flag, param, desc) for flag, param, desc in flag_lines
     )
 
-    help_text = f"""[bold white]Usage:[/bold white]  [green]python consensus_agent.py [--web] [-q 'Your question'][/green]
+    help_text = f"""[bold white]Usage:[/bold white]  [green]python -m yukon [--web] [-q 'Your question'][/green]
 
 {flag_table}
 
 [bold yellow]CLI Example:[/bold yellow]
-  [green]python consensus_agent.py -q "What is the capital of France?"[/green]
+  [green]python -m yukon -q "What is the capital of France?"[/green]
 
 [bold white]Interactive Use:[/bold white]
-  [green]python consensus_agent.py[/green] and enter your query at the [bold green]>>[/] prompt.
+  [green]python -m yukon[/green] and enter your query at the [bold green]>>[/] prompt.
 
 [bold yellow]Shortcuts:[/bold yellow]  [cyan]Ctrl+C[/cyan] or EOF (Ctrl+D) to quit.
 """
